@@ -67,6 +67,8 @@ final class AirportScene {
     private var runwayBusy = false
     private var parallelTaxiwayBusy = false
     private var waitingPlanes: [ObjectIdentifier: (takeoff: SCNAction, gateIndex: Int)] = [:]
+    private var pushbackTrucks: [SCNNode] = []
+    private var pushbackTruckHomes: [SCNVector3] = []
     var onPlaneWaitingChanged: ((Bool) -> Void)?
 
     private var arrivalInterval: TimeInterval = 14.0
@@ -95,8 +97,10 @@ final class AirportScene {
         buildRunway()
         buildParallelTaxiway()
         buildTaxiway()
+        buildJunctionPads()
         buildTerminal()
         buildControlTower()
+        buildPushbackDepots()
         buildGateMarkers()
         buildRunwayLights()
 
@@ -254,6 +258,77 @@ final class AirportScene {
         }
         return container
     }()
+
+    private func buildJunctionPads() {
+        let pavementColor = UIColor(red: 0.50, green: 0.50, blue: 0.52, alpha: 1.0)
+        let parallelZ = Float(parallelTaxiwayRowMin + parallelTaxiwayRowMax) / 2 * Self.tileSize
+        let runwayZ = Float(runwayRowMin + runwayRowMax) / 2 * Self.tileSize
+        let rampMidZ = Float(parallelTaxiwayRowMin + runwayRowMax) / 2 * Self.tileSize
+
+        for col in accessRampCols {
+            let x = Float(col) * Self.tileSize
+            addPad(at: SCNVector3(x, 0.022, parallelZ), radius: 3.5, color: pavementColor)
+            addPad(at: SCNVector3(x, 0.022, runwayZ), radius: 3.5, color: pavementColor)
+            addPad(at: SCNVector3(x, 0.020, rampMidZ), radius: 2.5, color: pavementColor)
+        }
+
+        let connectorX = Float(taxiwayColMin + taxiwayColMax) / 2 * Self.tileSize
+        addPad(at: SCNVector3(connectorX, 0.022, parallelZ), radius: 5.0, color: pavementColor)
+        addPad(at: SCNVector3(connectorX, 0.018, Float(apronRowMax) * Self.tileSize), radius: 5.5,
+               color: UIColor(red: 0.55, green: 0.55, blue: 0.57, alpha: 1.0))
+
+        for gate in gates {
+            let x = Float(gate.col) * Self.tileSize
+            addPad(at: SCNVector3(x, 0.018, Float(taxiwayRowStart) * Self.tileSize), radius: 4.0,
+                   color: UIColor(red: 0.55, green: 0.55, blue: 0.57, alpha: 1.0))
+        }
+    }
+
+    private func addPad(at pos: SCNVector3, radius: Float, color: UIColor) {
+        let disc = SCNCylinder(radius: CGFloat(radius), height: 0.06)
+        let mat = SCNMaterial()
+        mat.diffuse.contents = color
+        disc.materials = [mat]
+        let node = SCNNode(geometry: disc)
+        node.position = pos
+        worldNode.addChildNode(node)
+    }
+
+    private func buildPushbackDepots() {
+        for (idx, gate) in gates.enumerated() {
+            let dx: Float = idx % 2 == 0 ? -4 : 4
+            let depotWorld = SCNVector3(
+                Float(gate.col) * Self.tileSize + dx,
+                0,
+                Float(gate.row + 2) * Self.tileSize
+            )
+
+            let pad = SCNPlane(width: 4.0, height: 3.0)
+            let padMat = SCNMaterial()
+            padMat.diffuse.contents = UIColor(red: 0.95, green: 0.78, blue: 0.18, alpha: 1.0)
+            pad.materials = [padMat]
+            let padNode = SCNNode(geometry: pad)
+            padNode.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
+            padNode.position = SCNVector3(depotWorld.x, 0.024, depotWorld.z)
+            worldNode.addChildNode(padNode)
+
+            let stripe = SCNPlane(width: 3.6, height: 0.15)
+            let stripeMat = SCNMaterial()
+            stripeMat.diffuse.contents = UIColor(white: 0.1, alpha: 1.0)
+            stripe.materials = [stripeMat]
+            let stripeNode = SCNNode(geometry: stripe)
+            stripeNode.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
+            stripeNode.position = SCNVector3(depotWorld.x, 0.030, depotWorld.z)
+            worldNode.addChildNode(stripeNode)
+
+            let truck = Self.makePushbackTruck()
+            truck.position = depotWorld
+            truck.eulerAngles.y = Float.pi
+            worldNode.addChildNode(truck)
+            pushbackTrucks.append(truck)
+            pushbackTruckHomes.append(depotWorld)
+        }
+    }
 
     private func buildControlTower() {
         guard let template = Self.controlTowerTemplate?.clone() else { return }
@@ -536,20 +611,22 @@ final class AirportScene {
         let taxiIn = taxiSequence(from: rollEnd, through: inboundWaypoints)
 
         let spawnTruck = SCNAction.run { [weak self] _ in
-            self?.animatePushbackTruck(forPlaneAt: gateWorld)
+            self?.animatePushbackTruck(forGateIndex: gateIndex, planeAt: gateWorld)
         }
         let dockWait = SCNAction.wait(duration: dockDuration)
         let pushPlane = SCNAction.move(to: pushbackEnd, duration: pushbackDuration)
         pushPlane.timingMode = .easeInEaseOut
 
         let takeoffStart = SCNVector3(Float(runwayEntryCol - 3) * Self.tileSize, 0, runwayCenterZ)
-        let outboundWaypoints: [SCNVector3] = [
+        let holdShort = SCNVector3(Float(runwayEntryCol) * Self.tileSize, 0, parallelZ)
+        let taxiOutToHold = taxiSequence(from: pushbackEnd, through: [
             SCNVector3(Float(gate.col) * Self.tileSize, 0, parallelZ),
-            SCNVector3(Float(runwayEntryCol) * Self.tileSize, 0, parallelZ),
+            holdShort
+        ])
+        let enterRunwayPath = taxiSequence(from: holdShort, through: [
             SCNVector3(Float(runwayEntryCol) * Self.tileSize, 0, runwayCenterZ),
             takeoffStart
-        ]
-        let taxiToThreshold = taxiSequence(from: pushbackEnd, through: outboundWaypoints)
+        ])
 
         let liftoffGroundCol = runwayEntryCol - 36
         let liftoffGround = SCNVector3(Float(liftoffGroundCol) * Self.tileSize, 0, runwayCenterZ)
@@ -583,12 +660,16 @@ final class AirportScene {
                     plane.runAction(SCNAction.sequence([spawnTruck, dockWait, pushPlane])) { [weak self] in
                         guard let self = self else { return }
                         self.acquireParallelTaxiway(for: plane) {
-                            plane.runAction(taxiToThreshold) { [weak self] in
+                            plane.runAction(taxiOutToHold) { [weak self] in
                                 guard let self = self else { return }
                                 self.parallelTaxiwayBusy = false
-                                self.runwayBusy = true
-                                self.waitingPlanes[ObjectIdentifier(plane)] = (takeoff: takeoffSequence, gateIndex: gateIndex)
-                                self.onPlaneWaitingChanged?(true)
+                                self.acquireRunway(for: plane) {
+                                    plane.runAction(enterRunwayPath) { [weak self] in
+                                        guard let self = self else { return }
+                                        self.waitingPlanes[ObjectIdentifier(plane)] = (takeoff: takeoffSequence, gateIndex: gateIndex)
+                                        self.onPlaneWaitingChanged?(true)
+                                    }
+                                }
                             }
                         }
                     }
@@ -604,6 +685,17 @@ final class AirportScene {
         } else {
             plane.runAction(SCNAction.wait(duration: 0.6)) { [weak self] in
                 self?.acquireParallelTaxiway(for: plane, then: completion)
+            }
+        }
+    }
+
+    private func acquireRunway(for plane: SCNNode, then completion: @escaping () -> Void) {
+        if !runwayBusy {
+            runwayBusy = true
+            completion()
+        } else {
+            plane.runAction(SCNAction.wait(duration: 0.8)) { [weak self] in
+                self?.acquireRunway(for: plane, then: completion)
             }
         }
     }
@@ -698,22 +790,23 @@ final class AirportScene {
         }
     }
 
-    private func animatePushbackTruck(forPlaneAt gate: SCNVector3) {
-        let truck = Self.makePushbackTruck()
-        let depotPos = gridToWorld(col: pushbackDepot.col, row: pushbackDepot.row)
-        truck.position = depotPos
+    private func animatePushbackTruck(forGateIndex idx: Int, planeAt gate: SCNVector3) {
+        guard idx < pushbackTrucks.count else { return }
+        let truck = pushbackTrucks[idx]
+        let depotPos = pushbackTruckHomes[idx]
+
+        truck.removeAllActions()
 
         let toPlaneVec = SCNVector3(gate.x - depotPos.x, 0, gate.z - depotPos.z)
-        truck.eulerAngles.y = atan2(toPlaneVec.x, toPlaneVec.z)
-        worldNode.addChildNode(truck)
+        let yawToPlane = atan2(toPlaneVec.x, toPlaneVec.z)
+        let alignToPlane = SCNAction.rotateTo(x: 0, y: CGFloat(yawToPlane), z: 0, duration: 0.5, usesShortestUnitArc: true)
 
         let nosePos = SCNVector3(gate.x, 0, gate.z - 2.0)
-        let toPlane = SCNAction.move(to: nosePos, duration: 1.5)
+        let toPlane = SCNAction.move(to: nosePos, duration: 1.6)
         toPlane.timingMode = .easeInEaseOut
 
         let alignNose = SCNAction.rotateTo(x: 0, y: CGFloat.pi, z: 0, duration: 0.4, usesShortestUnitArc: true)
-
-        let waitAtPlane = SCNAction.wait(duration: max(0, dockDuration - 1.5 - 0.4))
+        let waitAtPlane = SCNAction.wait(duration: max(0, dockDuration - 2.0 - 0.4))
 
         let truckPushEnd = SCNVector3(gate.x, 0, gate.z + pushbackDistance - 2.0)
         let truckPush = SCNAction.move(to: truckPushEnd, duration: pushbackDuration)
@@ -725,10 +818,11 @@ final class AirportScene {
 
         let goHome = SCNAction.move(to: depotPos, duration: 1.8)
         goHome.timingMode = .easeInEaseOut
-        let remove = SCNAction.removeFromParentNode()
+
+        let restAlign = SCNAction.rotateTo(x: 0, y: CGFloat.pi, z: 0, duration: 0.4, usesShortestUnitArc: true)
 
         truck.runAction(SCNAction.sequence([
-            toPlane, alignNose, waitAtPlane, truckPush, alignHome, goHome, remove
+            alignToPlane, toPlane, alignNose, waitAtPlane, truckPush, alignHome, goHome, restAlign
         ]))
     }
 
