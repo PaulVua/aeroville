@@ -54,11 +54,12 @@ final class AirportScene {
     private let taxiwayColMin = 25
     private let taxiwayColMax = 34
     private let taxiwayRowStart = 38
-    private let taxiwayRowEnd = 46
-    private let parallelTaxiwayRowMin = 47
-    private let parallelTaxiwayRowMax = 48
+    private let taxiwayRowEnd = 43
+    private let parallelTaxiwayRowMin = 44
+    private let parallelTaxiwayRowMax = 45
+    private let accessRampCols = [14, 30, 54]
     private let exitRampCol = 14
-    private let runwayEntryCol = 59
+    private let runwayEntryCol = 54
     private let pushbackDepot = (col: 38, row: 36)
     private let pushbackDistance: Float = 5.0
     private let planeTaxiSpeed: Float = 6.0
@@ -94,6 +95,7 @@ final class AirportScene {
         buildParallelTaxiway()
         buildTaxiway()
         buildTerminal()
+        buildControlTower()
         buildGateMarkers()
         buildRunwayLights()
 
@@ -224,9 +226,9 @@ final class AirportScene {
         lineNode.position = SCNVector3(centerCol * Self.tileSize, 0.020, centerZ)
         worldNode.addChildNode(lineNode)
 
-        for col in [exitRampCol, runwayEntryCol] {
+        for col in accessRampCols {
             let ramp = SCNPlane(
-                width: CGFloat(2.0 * Self.tileSize),
+                width: CGFloat(2.5 * Self.tileSize),
                 height: CGFloat(Float(runwayRowMin - parallelTaxiwayRowMin) * Self.tileSize)
             )
             let rampMat = SCNMaterial()
@@ -238,6 +240,42 @@ final class AirportScene {
             rampNode.position = SCNVector3(Float(col) * Self.tileSize, 0.014, rampZ)
             worldNode.addChildNode(rampNode)
         }
+    }
+
+    private static let controlTowerTemplate: SCNNode? = {
+        guard let url = Bundle.main.url(forResource: "control_tower", withExtension: "usdz"),
+              let scene = try? SCNScene(url: url, options: nil) else {
+            return nil
+        }
+        let container = SCNNode()
+        for child in scene.rootNode.childNodes {
+            container.addChildNode(child.clone())
+        }
+        return container
+    }()
+
+    private func buildControlTower() {
+        guard let template = Self.controlTowerTemplate?.clone() else { return }
+        let bbox = template.boundingBox
+        let sizeX = bbox.max.x - bbox.min.x
+        let sizeY = bbox.max.y - bbox.min.y
+        let sizeZ = bbox.max.z - bbox.min.z
+        let targetHeight: Float = 18.0
+        let scale = targetHeight / max(sizeY, max(sizeX, sizeZ))
+        template.scale = SCNVector3(scale, scale, scale)
+        template.position = SCNVector3(
+            -(bbox.min.x + bbox.max.x) / 2 * scale,
+            -bbox.min.y * scale,
+            -(bbox.min.z + bbox.max.z) / 2 * scale
+        )
+        Self.applyCastsShadow(to: template)
+
+        let towerHost = SCNNode()
+        let towerWorld = gridToWorld(col: 40, row: 32)
+        towerHost.position = SCNVector3(towerWorld.x + 4, 0, towerWorld.z + 4)
+        towerHost.eulerAngles = SCNVector3(0, -Float.pi / 4, 0)
+        towerHost.addChildNode(template)
+        worldNode.addChildNode(towerHost)
     }
 
     private func makeRunwayImage(lengthPx: CGFloat, widthPx: CGFloat) -> UIImage {
@@ -572,22 +610,80 @@ final class AirportScene {
     }
 
     private func taxiSequence(from start: SCNVector3, through waypoints: [SCNVector3]) -> SCNAction {
-        var actions: [SCNAction] = []
-        var prev = start
-        for wp in waypoints {
-            let dir = (wp - prev).normalized()
-            let dist = (wp - prev).length
-            guard dist > 0.01 else { continue }
-            let yaw = atan2(dir.x, dir.z)
-            let rotate = SCNAction.rotateTo(x: 0, y: CGFloat(yaw), z: 0, duration: 0.6, usesShortestUnitArc: true)
-            let duration = TimeInterval(dist / planeTaxiSpeed)
-            let move = SCNAction.move(to: wp, duration: duration)
-            move.timingMode = .easeInEaseOut
-            actions.append(rotate)
-            actions.append(move)
-            prev = wp
+        let allWaypoints = [start] + waypoints
+        let smooth = Self.smoothPath(waypoints: allWaypoints, cornerRadius: 4.5)
+        return Self.curveFollow(points: smooth, speed: planeTaxiSpeed)
+    }
+
+    private static func smoothPath(waypoints: [SCNVector3], cornerRadius: Float) -> [SCNVector3] {
+        guard waypoints.count >= 3 else { return waypoints }
+        var result: [SCNVector3] = [waypoints[0]]
+        let segments = 8
+        for i in 1..<(waypoints.count - 1) {
+            let prev = waypoints[i - 1]
+            let curr = waypoints[i]
+            let next = waypoints[i + 1]
+            let distIn = (prev - curr).length
+            let distOut = (next - curr).length
+            let r = min(cornerRadius, distIn * 0.45, distOut * 0.45)
+            if r < 0.1 {
+                result.append(curr)
+                continue
+            }
+            let arcStart = curr + (prev - curr).normalized() * r
+            let arcEnd = curr + (next - curr).normalized() * r
+            result.append(arcStart)
+            for k in 1..<segments {
+                let t = Float(k) / Float(segments)
+                let u = 1 - t
+                let p = arcStart * (u * u) + curr * (2 * u * t) + arcEnd * (t * t)
+                result.append(p)
+            }
+            result.append(arcEnd)
         }
-        return SCNAction.sequence(actions)
+        result.append(waypoints.last!)
+        return result
+    }
+
+    private static func curveFollow(points: [SCNVector3], speed: Float) -> SCNAction {
+        guard points.count >= 2 else { return SCNAction.wait(duration: 0.01) }
+        var cumLengths: [Float] = [0]
+        var totalLength: Float = 0
+        for i in 1..<points.count {
+            totalLength += (points[i] - points[i - 1]).length
+            cumLengths.append(totalLength)
+        }
+        let duration = TimeInterval(totalLength / speed)
+        let capturedPoints = points
+        let capturedCumulative = cumLengths
+        let capturedTotal = totalLength
+        let capturedDuration = duration
+
+        return SCNAction.customAction(duration: duration) { node, elapsed in
+            let progress: Float
+            if capturedDuration > 0 {
+                progress = min(Float(elapsed / CGFloat(capturedDuration)), 1.0)
+            } else {
+                progress = 1.0
+            }
+            let d = progress * capturedTotal
+
+            var segIdx = 1
+            while segIdx < capturedCumulative.count && capturedCumulative[segIdx] < d {
+                segIdx += 1
+            }
+            if segIdx >= capturedPoints.count {
+                node.position = capturedPoints.last!
+                return
+            }
+            let from = capturedPoints[segIdx - 1]
+            let to = capturedPoints[segIdx]
+            let segLen = capturedCumulative[segIdx] - capturedCumulative[segIdx - 1]
+            let localT: Float = segLen > 0 ? (d - capturedCumulative[segIdx - 1]) / segLen : 0
+            node.position = from * (1 - localT) + to * localT
+            let tangent = (to - from).normalized()
+            node.eulerAngles = SCNVector3(0, atan2(tangent.x, tangent.z), 0)
+        }
     }
 
     private func animatePushbackTruck(forPlaneAt gate: SCNVector3) {
