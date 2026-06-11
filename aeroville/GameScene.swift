@@ -51,12 +51,21 @@ final class AirportScene {
     private let apronColMax = 37
     private let apronRowMin = 34
     private let apronRowMax = 37
-    private let taxiwayColMin = 27
-    private let taxiwayColMax = 29
+    private let taxiwayColMin = 25
+    private let taxiwayColMax = 34
     private let taxiwayRowStart = 38
-    private let taxiwayRowEnd = 49
+    private let taxiwayRowEnd = 46
+    private let parallelTaxiwayRowMin = 47
+    private let parallelTaxiwayRowMax = 48
+    private let exitRampCol = 14
+    private let runwayEntryCol = 59
     private let pushbackDepot = (col: 38, row: 36)
     private let pushbackDistance: Float = 5.0
+    private let planeTaxiSpeed: Float = 6.0
+
+    private var runwayBusy = false
+    private var waitingPlanes: [ObjectIdentifier: (takeoff: SCNAction, gateIndex: Int)] = [:]
+    var onPlaneWaitingChanged: ((Bool) -> Void)?
 
     private var arrivalInterval: TimeInterval = 14.0
     private let planeReward: Int = 50
@@ -82,6 +91,7 @@ final class AirportScene {
         buildGround()
         buildRunwayApron()
         buildRunway()
+        buildParallelTaxiway()
         buildTaxiway()
         buildTerminal()
         buildGateMarkers()
@@ -173,11 +183,11 @@ final class AirportScene {
 
     private func buildRunway() {
         let length = Float(runwayColEnd - runwayColStart + 1) * Self.tileSize
-        let width: Float = 2.5 * Self.tileSize
+        let width: Float = 3.5 * Self.tileSize
         let plane = SCNPlane(width: CGFloat(length), height: CGFloat(width))
 
         let mat = SCNMaterial()
-        mat.diffuse.contents = makeRunwayImage(lengthPx: 2000, widthPx: 2000 * CGFloat(width / length))
+        mat.diffuse.contents = makeRunwayImage(lengthPx: 2400, widthPx: 2400 * CGFloat(width / length))
         mat.diffuse.minificationFilter = .linear
         mat.diffuse.magnificationFilter = .linear
         plane.materials = [mat]
@@ -188,6 +198,46 @@ final class AirportScene {
         node.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
         node.position = SCNVector3(centerCol * Self.tileSize, 0.02, centerZ)
         worldNode.addChildNode(node)
+    }
+
+    private func buildParallelTaxiway() {
+        let length = Float(runwayColEnd - runwayColStart + 1) * Self.tileSize
+        let width = Float(parallelTaxiwayRowMax - parallelTaxiwayRowMin + 1) * Self.tileSize
+        let centerCol = Float(runwayColStart + runwayColEnd) / 2
+        let centerZ = Float(parallelTaxiwayRowMin + parallelTaxiwayRowMax) / 2 * Self.tileSize
+
+        let plane = SCNPlane(width: CGFloat(length), height: CGFloat(width))
+        let mat = SCNMaterial()
+        mat.diffuse.contents = UIColor(red: 0.48, green: 0.48, blue: 0.50, alpha: 1.0)
+        plane.materials = [mat]
+        let node = SCNNode(geometry: plane)
+        node.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
+        node.position = SCNVector3(centerCol * Self.tileSize, 0.015, centerZ)
+        worldNode.addChildNode(node)
+
+        let yellowLine = SCNPlane(width: CGFloat(length), height: 0.3)
+        let lineMat = SCNMaterial()
+        lineMat.diffuse.contents = UIColor(red: 0.95, green: 0.78, blue: 0.18, alpha: 1.0)
+        yellowLine.materials = [lineMat]
+        let lineNode = SCNNode(geometry: yellowLine)
+        lineNode.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
+        lineNode.position = SCNVector3(centerCol * Self.tileSize, 0.020, centerZ)
+        worldNode.addChildNode(lineNode)
+
+        for col in [exitRampCol, runwayEntryCol] {
+            let ramp = SCNPlane(
+                width: CGFloat(2.0 * Self.tileSize),
+                height: CGFloat(Float(runwayRowMin - parallelTaxiwayRowMin) * Self.tileSize)
+            )
+            let rampMat = SCNMaterial()
+            rampMat.diffuse.contents = UIColor(red: 0.48, green: 0.48, blue: 0.50, alpha: 1.0)
+            ramp.materials = [rampMat]
+            let rampNode = SCNNode(geometry: ramp)
+            rampNode.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
+            let rampZ = Float(parallelTaxiwayRowMin + runwayRowMax) / 2 * Self.tileSize
+            rampNode.position = SCNVector3(Float(col) * Self.tileSize, 0.014, rampZ)
+            worldNode.addChildNode(rampNode)
+        }
     }
 
     private func makeRunwayImage(lengthPx: CGFloat, widthPx: CGFloat) -> UIImage {
@@ -405,93 +455,139 @@ final class AirportScene {
     }
 
     private func spawnPlaneCycle() {
+        guard !runwayBusy else { return }
         guard let gateIndex = (0..<gates.count).first(where: { !gateOccupied[$0] }) else { return }
         gateOccupied[gateIndex] = true
+        runwayBusy = true
         let gate = gates[gateIndex]
 
         let touchdown = gridToWorld(col: runwayColEnd, row: runwayRow)
-        let runwayExit = gridToWorld(col: runwayExitCol, row: runwayRow)
+        let rollEnd = gridToWorld(col: exitRampCol, row: runwayRow)
         let gateWorld = gridToWorld(col: gate.col, row: gate.row)
+        let parallelZ = Float(parallelTaxiwayRowMin + parallelTaxiwayRowMax) / 2 * Self.tileSize
+        let pushbackEnd = SCNVector3(gateWorld.x, 0, gateWorld.z + pushbackDistance)
 
-        let runwayDir = (touchdown - runwayExit).normalized()
-        let approachDist: Float = 40
+        let runwayCenterZ = Float(runwayRowMin + runwayRowMax) / 2 * Self.tileSize
         let altitude: Float = 18
-        let approachGround = touchdown + runwayDir * approachDist
+        let approachGround = SCNVector3(Float(runwayColEnd) * Self.tileSize + 60, 0, runwayCenterZ)
         let approachAir = SCNVector3(approachGround.x, altitude, approachGround.z)
-        let departGround = touchdown + runwayDir * (approachDist + 8)
-        let departAir = SCNVector3(departGround.x, altitude + 8, departGround.z)
-        let liftoffAir = SCNVector3(touchdown.x, altitude * 0.35, touchdown.z)
+        let liftoffPoint = SCNVector3(Float(runwayColStart) * Self.tileSize - 10, altitude * 0.5, runwayCenterZ)
+        let departAir = SCNVector3(Float(runwayColStart) * Self.tileSize - 60, altitude + 12, runwayCenterZ)
 
         let plane = Self.makePlane()
+        plane.name = "plane"
         plane.position = approachAir
         plane.look(at: touchdown)
         worldNode.addChildNode(plane)
 
-        let pushbackEnd = SCNVector3(gateWorld.x, 0, gateWorld.z + pushbackDistance)
-
-        let dirToTaxiInitial = (gateWorld - runwayExit).normalized()
-        let yawTaxiIn = atan2(dirToTaxiInitial.x, dirToTaxiInitial.z)
-
-        let dirRunwayBack = (runwayExit - pushbackEnd).normalized()
-        let yawTaxiOut = atan2(dirRunwayBack.x, dirRunwayBack.z)
-
-        let dirTakeoff = (touchdown - runwayExit).normalized()
-        let yawTakeoff = atan2(dirTakeoff.x, dirTakeoff.z)
-
         let yawLanding = atan2((touchdown - approachAir).x, (touchdown - approachAir).z)
+        let yawTakeoff = atan2((liftoffPoint - SCNVector3(Float(runwayEntryCol) * Self.tileSize, 0, runwayCenterZ)).x,
+                               (liftoffPoint - SCNVector3(Float(runwayEntryCol) * Self.tileSize, 0, runwayCenterZ)).z)
+        let initialYaw = SCNAction.rotateTo(x: 0, y: CGFloat(yawLanding), z: 0, duration: 0.01, usesShortestUnitArc: false)
 
         let land = SCNAction.move(to: touchdown, duration: landDuration)
         land.timingMode = .easeIn
-        let roll = SCNAction.move(to: runwayExit, duration: rollDuration)
+        let roll = SCNAction.move(to: rollEnd, duration: rollDuration)
         roll.timingMode = .easeOut
 
-        let alignTaxiIn = SCNAction.rotateTo(x: 0, y: CGFloat(yawTaxiIn), z: 0, duration: 0.7, usesShortestUnitArc: true)
-        let taxiIn = SCNAction.move(to: gateWorld, duration: taxiDuration)
-        taxiIn.timingMode = .easeInEaseOut
+        let inboundWaypoints: [SCNVector3] = [
+            SCNVector3(Float(exitRampCol) * Self.tileSize, 0, parallelZ),
+            SCNVector3(Float(gate.col) * Self.tileSize, 0, parallelZ),
+            SCNVector3(Float(gate.col) * Self.tileSize, 0, Float(taxiwayRowStart) * Self.tileSize),
+            gateWorld
+        ]
+        let taxiIn = taxiSequence(from: rollEnd, through: inboundWaypoints)
+
+        let runwayClearedAfterLand = SCNAction.run { [weak self] _ in self?.runwayBusy = false }
 
         let spawnTruck = SCNAction.run { [weak self] _ in
             self?.animatePushbackTruck(forPlaneAt: gateWorld)
         }
         let dockWait = SCNAction.wait(duration: dockDuration)
-
         let pushPlane = SCNAction.move(to: pushbackEnd, duration: pushbackDuration)
         pushPlane.timingMode = .easeInEaseOut
 
-        let alignTaxiOut = SCNAction.rotateTo(x: 0, y: CGFloat(yawTaxiOut), z: 0, duration: 1.0, usesShortestUnitArc: true)
-        let taxiOut = SCNAction.move(to: runwayExit, duration: taxiDuration)
-        taxiOut.timingMode = .easeInEaseOut
+        let outboundWaypoints: [SCNVector3] = [
+            SCNVector3(Float(gate.col) * Self.tileSize, 0, parallelZ),
+            SCNVector3(Float(runwayEntryCol) * Self.tileSize, 0, parallelZ),
+            SCNVector3(Float(runwayEntryCol) * Self.tileSize, 0, runwayCenterZ)
+        ]
+        let taxiToThreshold = taxiSequence(from: pushbackEnd, through: outboundWaypoints)
 
-        let alignTakeoff = SCNAction.rotateTo(x: 0, y: CGFloat(yawTakeoff), z: 0, duration: 0.9, usesShortestUnitArc: true)
-        let takeoff = SCNAction.move(to: liftoffAir, duration: takeoffDuration)
+        let alignWest = SCNAction.rotateTo(
+            x: 0,
+            y: CGFloat(atan2((SCNVector3(Float(runwayColStart) * Self.tileSize, 0, runwayCenterZ)
+                              - SCNVector3(Float(runwayEntryCol) * Self.tileSize, 0, runwayCenterZ)).x,
+                             (SCNVector3(Float(runwayColStart) * Self.tileSize, 0, runwayCenterZ)
+                              - SCNVector3(Float(runwayEntryCol) * Self.tileSize, 0, runwayCenterZ)).z)),
+            z: 0,
+            duration: 1.0,
+            usesShortestUnitArc: true
+        )
+        _ = yawTakeoff
+
+        let takeoff = SCNAction.move(to: liftoffPoint, duration: takeoffDuration)
         takeoff.timingMode = .easeIn
-        let depart = SCNAction.move(to: departAir, duration: 1.4)
+        let depart = SCNAction.move(to: departAir, duration: 1.8)
         depart.timingMode = .easeOut
-
-        let fade = SCNAction.fadeOut(duration: 0.4)
-
+        let fade = SCNAction.fadeOut(duration: 0.5)
         let cleanup = SCNAction.run { [weak self] _ in
             guard let self = self else { return }
             self.gateOccupied[gateIndex] = false
             self.money += self.planeReward
+            self.runwayBusy = false
+        }
+        let remove = SCNAction.removeFromParentNode()
+        let takeoffSequence = SCNAction.sequence([takeoff, depart, fade, cleanup, remove])
+
+        let markWaiting = SCNAction.run { [weak self] _ in
+            guard let self = self else { return }
+            self.waitingPlanes[ObjectIdentifier(plane)] = (takeoff: takeoffSequence, gateIndex: gateIndex)
+            self.onPlaneWaitingChanged?(true)
         }
 
-        let initialYawAction = SCNAction.rotateTo(x: 0, y: CGFloat(yawLanding), z: 0, duration: 0.01, usesShortestUnitArc: false)
-        let remove = SCNAction.removeFromParentNode()
-
         plane.runAction(SCNAction.sequence([
-            initialYawAction,
+            initialYaw,
             land, roll,
-            alignTaxiIn, taxiIn,
-            spawnTruck,
-            dockWait,
-            pushPlane,
-            alignTaxiOut, taxiOut,
-            alignTakeoff, takeoff,
-            depart,
-            fade,
-            cleanup,
-            remove
+            runwayClearedAfterLand,
+            taxiIn,
+            spawnTruck, dockWait, pushPlane,
+            taxiToThreshold,
+            alignWest,
+            markWaiting
         ]))
+    }
+
+    func grantTakeoff(for plane: SCNNode) -> Bool {
+        guard !runwayBusy else { return false }
+        guard let entry = waitingPlanes.removeValue(forKey: ObjectIdentifier(plane)) else { return false }
+        runwayBusy = true
+        onPlaneWaitingChanged?(!waitingPlanes.isEmpty)
+        plane.runAction(entry.takeoff)
+        return true
+    }
+
+    func isPlaneWaiting(_ plane: SCNNode) -> Bool {
+        return waitingPlanes[ObjectIdentifier(plane)] != nil
+    }
+
+    private func taxiSequence(from start: SCNVector3, through waypoints: [SCNVector3]) -> SCNAction {
+        var actions: [SCNAction] = []
+        var prev = start
+        for wp in waypoints {
+            let dir = (wp - prev).normalized()
+            let dist = (wp - prev).length
+            guard dist > 0.01 else { continue }
+            let yaw = atan2(dir.x, dir.z)
+            let rotate = SCNAction.rotateTo(x: 0, y: CGFloat(yaw), z: 0, duration: 0.6, usesShortestUnitArc: true)
+            let duration = TimeInterval(dist / planeTaxiSpeed)
+            let move = SCNAction.move(to: wp, duration: duration)
+            move.timingMode = .easeInEaseOut
+            actions.append(rotate)
+            actions.append(move)
+            prev = wp
+        }
+        return SCNAction.sequence(actions)
     }
 
     private func animatePushbackTruck(forPlaneAt gate: SCNVector3) {

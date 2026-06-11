@@ -8,6 +8,8 @@ final class GameViewController: UIViewController {
     private var moneyLabel: UILabel!
     private var upgradeButton: UIButton!
     private var resetButton: UIButton!
+    private var takeoffButton: UIButton!
+    private var selectedPlane: SCNNode?
 
     private var cameraTarget = SCNVector3(0, 0, 0)
     private var cameraDistance: Float = 180
@@ -49,8 +51,52 @@ final class GameViewController: UIViewController {
         installMoneyLabel()
         installUpgradeButton()
         installResetButton()
+        installTakeoffButton()
         installGestures()
         updateMoney(airport.money)
+    }
+
+    private func installTakeoffButton() {
+        var config = UIButton.Configuration.filled()
+        config.title = "🛫  Autoriser décollage"
+        config.baseBackgroundColor = UIColor(red: 0.9, green: 0.3, blue: 0.15, alpha: 1.0)
+        config.cornerStyle = .large
+        config.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 22, bottom: 14, trailing: 22)
+        var attr = AttributedString(config.title ?? "")
+        attr.font = .systemFont(ofSize: 18, weight: .bold)
+        config.attributedTitle = attr
+        takeoffButton = UIButton(configuration: config, primaryAction: UIAction { [weak self] _ in
+            self?.handleTakeoff()
+        })
+        takeoffButton.translatesAutoresizingMaskIntoConstraints = false
+        takeoffButton.isHidden = true
+        view.addSubview(takeoffButton)
+        NSLayoutConstraint.activate([
+            takeoffButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            takeoffButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -30),
+        ])
+    }
+
+    private func handleTakeoff() {
+        guard let plane = selectedPlane else { return }
+        if airport.grantTakeoff(for: plane) {
+            selectedPlane = nil
+            takeoffButton.isHidden = true
+        } else {
+            let shake = CAKeyframeAnimation(keyPath: "transform.translation.x")
+            shake.values = [-8, 8, -6, 6, -3, 3, 0]
+            shake.duration = 0.35
+            takeoffButton.layer.add(shake, forKey: "shake")
+        }
+    }
+
+    private func findPlaneRoot(from node: SCNNode) -> SCNNode? {
+        var current: SCNNode? = node
+        while let n = current {
+            if n.name == "plane" { return n }
+            current = n.parent
+        }
+        return nil
     }
 
     private func applyCamera() {
@@ -155,16 +201,35 @@ final class GameViewController: UIViewController {
         twoFingerPan.maximumNumberOfTouches = 2
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
         let rotate = UIRotationGestureRecognizer(target: self, action: #selector(handleRotate(_:)))
+        let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap(_:)))
+        singleTap.numberOfTapsRequired = 1
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
         doubleTap.numberOfTapsRequired = 2
+        singleTap.require(toFail: doubleTap)
         scnView.addGestureRecognizer(pan)
         scnView.addGestureRecognizer(twoFingerPan)
         scnView.addGestureRecognizer(pinch)
         scnView.addGestureRecognizer(rotate)
+        scnView.addGestureRecognizer(singleTap)
         scnView.addGestureRecognizer(doubleTap)
         pinch.delegate = self
         rotate.delegate = self
         twoFingerPan.delegate = self
+        singleTap.delegate = self
+    }
+
+    @objc private func handleSingleTap(_ recognizer: UITapGestureRecognizer) {
+        let point = recognizer.location(in: scnView)
+        let hits = scnView.hitTest(point, options: [SCNHitTestOption.boundingBoxOnly: false])
+        for hit in hits {
+            if let plane = findPlaneRoot(from: hit.node), airport.isPlaneWaiting(plane) {
+                selectedPlane = plane
+                takeoffButton.isHidden = false
+                return
+            }
+        }
+        selectedPlane = nil
+        takeoffButton.isHidden = true
     }
 
     @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
