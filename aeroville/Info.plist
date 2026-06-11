@@ -26,5 +26,12 @@
 		<key>UIColorName</key>
 		<string>Black</string>
 	</dict>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UIRequiresFullScreen</key>
+	<true/>
 </dict>
 </plist>
