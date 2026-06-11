@@ -97,7 +97,6 @@ final class AirportScene {
         buildRunway()
         buildParallelTaxiway()
         buildTaxiway()
-        buildJunctionPads()
         buildTerminal()
         buildControlTower()
         buildPushbackDepots()
@@ -213,14 +212,12 @@ final class AirportScene {
         let centerCol = Float(runwayColStart + runwayColEnd) / 2
         let centerZ = Float(parallelTaxiwayRowMin + parallelTaxiwayRowMax) / 2 * Self.tileSize
 
-        let plane = SCNPlane(width: CGFloat(length), height: CGFloat(width))
-        let mat = SCNMaterial()
-        mat.diffuse.contents = UIColor(red: 0.48, green: 0.48, blue: 0.50, alpha: 1.0)
-        plane.materials = [mat]
-        let node = SCNNode(geometry: plane)
-        node.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
-        node.position = SCNVector3(centerCol * Self.tileSize, 0.015, centerZ)
-        worldNode.addChildNode(node)
+        let pavementColor = UIColor(red: 0.48, green: 0.48, blue: 0.50, alpha: 1.0)
+        let stadium = Self.makeStadiumShape(width: CGFloat(length), height: CGFloat(width),
+                                             color: pavementColor)
+        stadium.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
+        stadium.position = SCNVector3(centerCol * Self.tileSize, 0.015, centerZ)
+        worldNode.addChildNode(stadium)
 
         let yellowLine = SCNPlane(width: CGFloat(length), height: 0.3)
         let lineMat = SCNMaterial()
@@ -232,19 +229,45 @@ final class AirportScene {
         worldNode.addChildNode(lineNode)
 
         for col in accessRampCols {
-            let ramp = SCNPlane(
-                width: CGFloat(2.5 * Self.tileSize),
-                height: CGFloat(Float(runwayRowMin - parallelTaxiwayRowMin) * Self.tileSize)
-            )
-            let rampMat = SCNMaterial()
-            rampMat.diffuse.contents = UIColor(red: 0.48, green: 0.48, blue: 0.50, alpha: 1.0)
-            ramp.materials = [rampMat]
-            let rampNode = SCNNode(geometry: ramp)
+            let rampWidth = CGFloat(2.5 * Self.tileSize)
+            let rampHeight = CGFloat(Float(runwayRowMin - parallelTaxiwayRowMin) * Self.tileSize)
+            let rampNode = Self.makeStadiumShape(width: rampWidth, height: rampHeight,
+                                                  color: pavementColor)
             rampNode.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
             let rampZ = Float(parallelTaxiwayRowMin + runwayRowMax) / 2 * Self.tileSize
-            rampNode.position = SCNVector3(Float(col) * Self.tileSize, 0.014, rampZ)
+            rampNode.position = SCNVector3(Float(col) * Self.tileSize, 0.013, rampZ)
             worldNode.addChildNode(rampNode)
         }
+    }
+
+    private static func makeStadiumShape(width: CGFloat, height: CGFloat, color: UIColor) -> SCNNode {
+        let radius = min(width, height) / 2
+        let path = UIBezierPath(
+            roundedRect: CGRect(x: -width / 2, y: -height / 2, width: width, height: height),
+            cornerRadius: radius
+        )
+        path.flatness = 0.05
+        let shape = SCNShape(path: path, extrusionDepth: 0.02)
+        let mat = SCNMaterial()
+        mat.diffuse.contents = color
+        mat.isDoubleSided = true
+        shape.materials = [mat]
+        return SCNNode(geometry: shape)
+    }
+
+    private static func makeRoundedShape(width: CGFloat, height: CGFloat,
+                                          cornerRadius: CGFloat, color: UIColor) -> SCNNode {
+        let path = UIBezierPath(
+            roundedRect: CGRect(x: -width / 2, y: -height / 2, width: width, height: height),
+            cornerRadius: cornerRadius
+        )
+        path.flatness = 0.05
+        let shape = SCNShape(path: path, extrusionDepth: 0.02)
+        let mat = SCNMaterial()
+        mat.diffuse.contents = color
+        mat.isDoubleSided = true
+        shape.materials = [mat]
+        return SCNNode(geometry: shape)
     }
 
     private static let controlTowerTemplate: SCNNode? = {
@@ -259,40 +282,6 @@ final class AirportScene {
         return container
     }()
 
-    private func buildJunctionPads() {
-        let pavementColor = UIColor(red: 0.50, green: 0.50, blue: 0.52, alpha: 1.0)
-        let parallelZ = Float(parallelTaxiwayRowMin + parallelTaxiwayRowMax) / 2 * Self.tileSize
-        let runwayZ = Float(runwayRowMin + runwayRowMax) / 2 * Self.tileSize
-        let rampMidZ = Float(parallelTaxiwayRowMin + runwayRowMax) / 2 * Self.tileSize
-
-        for col in accessRampCols {
-            let x = Float(col) * Self.tileSize
-            addPad(at: SCNVector3(x, 0.022, parallelZ), radius: 3.5, color: pavementColor)
-            addPad(at: SCNVector3(x, 0.022, runwayZ), radius: 3.5, color: pavementColor)
-            addPad(at: SCNVector3(x, 0.020, rampMidZ), radius: 2.5, color: pavementColor)
-        }
-
-        let connectorX = Float(taxiwayColMin + taxiwayColMax) / 2 * Self.tileSize
-        addPad(at: SCNVector3(connectorX, 0.022, parallelZ), radius: 5.0, color: pavementColor)
-        addPad(at: SCNVector3(connectorX, 0.018, Float(apronRowMax) * Self.tileSize), radius: 5.5,
-               color: UIColor(red: 0.55, green: 0.55, blue: 0.57, alpha: 1.0))
-
-        for gate in gates {
-            let x = Float(gate.col) * Self.tileSize
-            addPad(at: SCNVector3(x, 0.018, Float(taxiwayRowStart) * Self.tileSize), radius: 4.0,
-                   color: UIColor(red: 0.55, green: 0.55, blue: 0.57, alpha: 1.0))
-        }
-    }
-
-    private func addPad(at pos: SCNVector3, radius: Float, color: UIColor) {
-        let disc = SCNCylinder(radius: CGFloat(radius), height: 0.06)
-        let mat = SCNMaterial()
-        mat.diffuse.contents = color
-        disc.materials = [mat]
-        let node = SCNNode(geometry: disc)
-        node.position = pos
-        worldNode.addChildNode(node)
-    }
 
     private func buildPushbackDepots() {
         for (idx, gate) in gates.enumerated() {
@@ -408,26 +397,28 @@ final class AirportScene {
     private func buildTaxiway() {
         let taxiCenterCol = Float(taxiwayColMin + taxiwayColMax) / 2
         let taxiCenterRow = Float(taxiwayRowStart + taxiwayRowEnd) / 2
-        let taxiwayWidth = Float(taxiwayColMax - taxiwayColMin + 1) * Self.tileSize
-        let taxiwayLength = Float(taxiwayRowEnd - taxiwayRowStart + 1) * Self.tileSize
-        let plane = SCNPlane(width: CGFloat(taxiwayWidth), height: CGFloat(taxiwayLength))
-        let mat = SCNMaterial()
-        mat.diffuse.contents = UIColor(red: 0.50, green: 0.50, blue: 0.52, alpha: 1.0)
-        plane.materials = [mat]
-        let node = SCNNode(geometry: plane)
-        node.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
-        node.position = SCNVector3(taxiCenterCol * Self.tileSize, 0.015, taxiCenterRow * Self.tileSize)
-        worldNode.addChildNode(node)
+        let taxiwayWidth = CGFloat(Float(taxiwayColMax - taxiwayColMin + 1) * Self.tileSize)
+        let taxiwayLength = CGFloat(Float(taxiwayRowEnd - taxiwayRowStart + 1) * Self.tileSize)
+        let connectorColor = UIColor(red: 0.50, green: 0.50, blue: 0.52, alpha: 1.0)
+        let connector = Self.makeRoundedShape(
+            width: taxiwayWidth, height: taxiwayLength,
+            cornerRadius: min(taxiwayWidth, taxiwayLength) / 3,
+            color: connectorColor
+        )
+        connector.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
+        connector.position = SCNVector3(taxiCenterCol * Self.tileSize, 0.015, taxiCenterRow * Self.tileSize)
+        worldNode.addChildNode(connector)
 
         let apronCenterCol = Float(apronColMin + apronColMax) / 2
         let apronCenterRow = Float(apronRowMin + apronRowMax) / 2
-        let apronWidth = Float(apronColMax - apronColMin + 1) * Self.tileSize
-        let apronDepth = Float(apronRowMax - apronRowMin + 1) * Self.tileSize
-        let apronPlane = SCNPlane(width: CGFloat(apronWidth), height: CGFloat(apronDepth))
-        let apronMat = SCNMaterial()
-        apronMat.diffuse.contents = UIColor(red: 0.55, green: 0.55, blue: 0.57, alpha: 1.0)
-        apronPlane.materials = [apronMat]
-        let apronNode = SCNNode(geometry: apronPlane)
+        let apronWidth = CGFloat(Float(apronColMax - apronColMin + 1) * Self.tileSize)
+        let apronDepth = CGFloat(Float(apronRowMax - apronRowMin + 1) * Self.tileSize)
+        let apronColor = UIColor(red: 0.55, green: 0.55, blue: 0.57, alpha: 1.0)
+        let apronNode = Self.makeRoundedShape(
+            width: apronWidth, height: apronDepth,
+            cornerRadius: min(apronWidth, apronDepth) / 3,
+            color: apronColor
+        )
         apronNode.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
         apronNode.position = SCNVector3(apronCenterCol * Self.tileSize, 0.012, apronCenterRow * Self.tileSize)
         worldNode.addChildNode(apronNode)
